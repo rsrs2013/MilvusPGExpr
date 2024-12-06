@@ -125,6 +125,7 @@ def build_collection(milvus):
 def connect_postgres_server():
     try: 
         conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASSWORD, database=PG_DATABASE)
+        print(f"Connected to the postgres server")
         return conn
     except Exception as e:
         print(f"Unable to connect to the database: {e}")
@@ -132,12 +133,14 @@ def connect_postgres_server():
 
 def create_pg_table(conn,cur):
     try:
-        sql_drop = "DROP TABLE "+ PG_TABLE_NAME;
+        print(f"Creating the postgres table")
+        sql_drop = "DROP TABLE IF EXISTS "+ PG_TABLE_NAME;
         cur.execute(sql_drop);
+        print(f"Dropped the table")
         sql = "CREATE TABLE " + PG_TABLE_NAME + " (ids bigint, sex char(10), get_time timestamp, is_glasses boolean);"
         cur.execute(sql)
         conn.commit()
-        print("create postgres table!")
+        print("created postgres table!")
     except Exception as e:
         print(f"can't create postgres table: {e}")
 
@@ -172,7 +175,7 @@ def copy_data_to_pg(conn, cur):
             print("failed  copy!")
 
 def copy_data_to_pg_using_psql():
-    fname = 'temp_full.csv'
+    #fname = 'temp_full.csv'
     #csv_path = os.path.join(os.getcwd(), fname)
     #csv_path = '/tmp/temp.csv'
     csv_path = '/tmp/postgres_table.csv'
@@ -218,6 +221,8 @@ def build_pg_index_using_psql():
     except Exception as e:
         print(f"failed build index {e}")
 
+# writes a line of string id, sex, time, glasses to a file
+# this file is read by the postgres sql
 def record_txt(ids):
     fname = '/tmp/temp.csv'
     f2 = open(COMPLETE_CSV_FILE, "a")
@@ -298,11 +303,13 @@ def main():
     except FileNotFoundError:
         print("The file does not exist.")
 
+    # Inserting into Milvus
     while count < (VEC_NUM // BASE_LEN):
         #vectors = load_bvecs_data(FILE_PATH,BASE_LEN,count)
         vectors = load_fvecs_data_trial(FILE_PATH,BASE_LEN,count)
         print(f"Length of the vectors is: {len(vectors)}")
         #data = [vectors]
+        # generate the vector ids for each of the row in the fvecs file
         vectors_ids = [id for id in range(count*BASE_LEN,(count+1)*BASE_LEN)]
         if len(vectors) != BASE_LEN:
             raise ValueError(f"Expected {BASE_LEN} vectors, but got {len(vectors)}.")

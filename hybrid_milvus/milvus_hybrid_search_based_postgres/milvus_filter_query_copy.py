@@ -17,20 +17,18 @@ MILVUS_collection = 'milvus_hybrid_query'
 FILE_PATH = '/home/iitd/milvus/hybrid_milvus/sift/sift_base.fvecs'
 QUERY_PATH = '/home/iitd/milvus/hybrid_milvus/sift/sift_query.fvecs'
 GROUND_TRUTH_PATH = '/home/iitd/milvus/hybrid_milvus/sift/sift_groundtruth.ivecs'
-ground_truth_dir = "output_ivecs_results"
+GROUND_TRUTH_DIR = "output_ivecs_results"
 
 
 VEC_NUM = 1000000
 BASE_LEN = 100000
 VEC_DIM = 128
-K = 40
+TOP_K = 10
 
 SERVER_ADDR = "127.0.0.1"
 SERVER_PORT = 19530
-
-
-
-
+MILVUS_ALONE_RESULTS_FILE = "milvus_alone_res.csv"
+TOTAL_QUERY_VECS = 5000
 csv_file = "/tmp/temp_full.csv"
 
 sex_flag = False
@@ -57,6 +55,12 @@ def convert_ts_to_str(timestamp):
     formatted_string = dt_object.strftime('%Y-%m-%d %H:%M:%S')  # Example format
 
     return formatted_string
+
+def record_recall_result(TOP_K, recall, precision):
+    fname = MILVUS_ALONE_RESULTS_FILE
+    with open(fname,'a') as f:
+        line = str(TOP_K) + "|" + f"{recall * 100:.2f}" + "|" + f"{precision * 100:.2f}" + "|"+ "\n"
+        f.write(line)
 
 def get_vector_at_location(fname,query_location):
     #begin_num = base_len * idx
@@ -107,7 +111,7 @@ def query_milvus(milvus_col, filter_expr, output_fields):
         anns_field="vector",         # Field to search (your vector field name)
         param=search_params,         # Search parameters
         output_fields=output_fields, 
-        limit=K,                    # Top 
+        limit=TOP_K,                    # Top 
         expr=filter_expr                    # Optional expression for filtering (e.g., using other fields)
     )
     
@@ -179,7 +183,7 @@ def generate_ground_truth(milvus_col):
     
     return filtered_ground_truth
 
-# def run_multithreaded_queries(ground_truth, filter_expr, milvus_col, K=10, max_workers=10):
+# def run_multithreaded_queries(ground_truth, filter_expr, milvus_col, TOP_K=10, max_workers=10):
 #     results_dict = {}  # Dictionary to store results with 'id' as the key
 
 #     time_start_1 = time.time()
@@ -196,7 +200,7 @@ def generate_ground_truth(milvus_col):
 #             i = future_to_query[future]
 #             try:
 #                 query_result = future.result()  # Get the result of the query
-#                 ids = [item['id'] for item in query_result[:K]]  # Get 'id' from first K items
+#                 ids = [item['id'] for item in query_result[:TOP_K]]  # Get 'id' from first TOP_K items
 #                 results_dict[i] = ids  # Store the result in the dictionary with 'id' as the key
 #                 #print(f"Count is: {i}")
 #                 #print(f"Query result is: {query_result}")
@@ -212,55 +216,66 @@ def generate_ground_truth(milvus_col):
 
 #     return results_dict
 
-def calculate_recall_helper(predicted_indices, ground_truth_query_id, K=10):
-    print(f"Value of K in recall helper is: {K}")
+def calculate_recall_helper(predicted_indices, ground_truth_query_id, TOP_K=10):
+    print(f"Value of TOP_K in recall helper is: {TOP_K}")
     print(f"Length of predicted_indices for query {ground_truth_query_id} is: {len(predicted_indices)}")
-    k_sorted_gt = get_ground_truth(ground_truth_query_id, K)
+    k_sorted_gt = get_ground_truth(ground_truth_query_id, TOP_K)
     set_predicted = set(predicted_indices)
     set_k_gt = set(k_sorted_gt)
-    print(f"Predicted set is: {set_predicted}")
-    print(f"Gt set is: {set_k_gt}")
+    print(f"Milvus Predicted set for query-{ground_truth_query_id} is: {set_predicted}")
+    print(f"Gt set for query-{ground_truth_query_id} is: {k_sorted_gt}")
 
-    intersection_res = len(set_predicted & set_k_gt)
+    true_positives = len(set_predicted & set_k_gt)
     actual_positives = len(k_sorted_gt)
     false_positives = len(set_predicted - set_k_gt)
     false_negatives = len(set_k_gt - set_predicted)
-    return intersection_res, actual_positives, false_positives, false_negatives
+
+    print(f"QueryId:{ground_truth_query_id} AP {actual_positives}, FP {false_positives}, FN {false_negatives}, TP {true_positives}")
+    return ground_truth_query_id, true_positives, actual_positives, false_positives, false_negatives
 
 
-def calculate_recall(milvus_results, K=10, max_workers=10):
+def calculate_recall(milvus_results, TOP_K=10, max_workers=10):
     time_start_1 = time.time()
     correct_matches = 0
     total_actual_positives = 0
     total_false_positives = 0
     total_false_negatives = 0
+    recall_sum = 0
+    precision_sum = 0
     # Create a thread pool with a maximum number of workers
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit queries asynchronously and store the future results
         future_to_query = {
-            executor.submit(calculate_recall_helper, milvus_results[i],i, K): i
-            for i in range(0,5000)
+            executor.submit(calculate_recall_helper, milvus_results[i],i, TOP_K): i
+            for i in range(0,TOTAL_QUERY_VECS)
         }
 
         # As results complete, process them
         for future in concurrent.futures.as_completed(future_to_query):
             i = future_to_query[future]
             try:
-                intersection_res, actual_positives, false_positives, false_negatives = future.result()  # Get the result of the query
-                print(f"{false_positives}, {false_negatives}")
-                correct_matches += intersection_res
-                total_actual_positives += actual_positives
-                total_false_positives += false_positives  
-                total_false_negatives += false_negatives              
+                query_id, true_positives, actual_positives, false_positives, false_negatives = future.result()  # Get the result of the query
+                local_recall = true_positives / actual_positives
+                local_precision = 0
+                if(true_positives + false_positives != 0):
+                    local_precision = true_positives / (true_positives + false_positives)
+                recall_sum += local_recall
+                precision_sum += local_precision
+                
+                # correct_matches += intersection_res
+                # total_actual_positives += actual_positives
+                # total_false_positives += false_positives  
+                # total_false_negatives += false_negatives              
             except Exception as exc:
                 print(f"Query {i} generated an exception: {exc}")
 
-    recall = correct_matches / total_actual_positives
-    precision = correct_matches / (correct_matches + total_false_positives)
-    print(f"K value is: {K}")
+    recall = recall_sum / TOTAL_QUERY_VECS
+    precision = precision_sum / TOTAL_QUERY_VECS
+    print(f"TOP_K value is: {TOP_K}")
     print(f"Recall: {recall * 100:.2f}%")
     print(f"Precision: {precision * 100:.2f}%")
-    print(f"Total True Positives: {correct_matches} False Positives: {total_false_positives} False Negatives: {total_false_negatives} ")
+    record_recall_result(TOP_K, recall, precision)
+    #print(f"Total True Positives: {correct_matches} False Positives: {total_false_positives} False Negatives: {total_false_negatives} ")
     return recall
     
 
@@ -269,7 +284,7 @@ def calculate_recall(milvus_results, K=10, max_workers=10):
 # according to the eculidean distance and which satisfy the sql filter given by the user while
 # generating the ivec file.
 def read_ivecs_file(ivecs_filename):
-    ivecs_filename = os.path.join(ground_truth_dir, ivecs_filename)
+    ivecs_filename = os.path.join(GROUND_TRUTH_DIR, ivecs_filename)
     with open(ivecs_filename, 'rb') as f:
         # Read the query ID (first 4 bytes)
         query_id = struct.unpack('i', f.read(4))[0]
@@ -282,11 +297,11 @@ def read_ivecs_file(ivecs_filename):
         return sorted_indices
   
 
-def get_ground_truth(query_id, K = 10):
+def get_ground_truth(query_id, TOP_K = 10):
     ivecs_filename = f"query_{query_id}.ivecs"
     sorted_indices = read_ivecs_file(ivecs_filename)
     #print(f"Len of {query_id} is {len(sorted_indices)}")
-    k_sorted_indices = sorted_indices[0:K]
+    k_sorted_indices = sorted_indices[0:TOP_K]
     return k_sorted_indices
 
 # def calculate_recall(milvus_results, ground_truth):
@@ -321,12 +336,13 @@ def main(argv):
     milvus.load_collection(milvus_col.name)
     #filter_expr = None
     output_fields = []
+    global TOP_K
     
     try:
         opts, args = getopt.getopt(
             sys.argv[1:],
-            "n:s:t:g:v:k:q",
-            ["num=", "sex=", "time=", "glasses=", "query","vector=", "kNearestNeighbor="],
+            "n:s:t:g:vk:q",
+            ["num=", "sex=", "time=", "glasses=", "vector=", "top_k=", "query="],
         )
         # print(opts)
     except getopt.GetoptError:
@@ -335,8 +351,8 @@ def main(argv):
 
     for opt_name, opt_value in opts:
         #if opt_name in ("-k", "--knn"):
-        #    K = opt_value
-        #    print(f"K Nearest Neighbor: {opt_value}")
+        #    TOP_K = opt_value
+        #    print(f"TOP_K Nearest Neighbor: {opt_value}")
         if opt_name in ("-n", "--num"):
             query_location = opt_value
             #query_vec = load_query_list(FILE_PATH,query_location)
@@ -433,7 +449,7 @@ def main(argv):
             #generate_ground_truth(milvus_col)
             #ground_truth = ivecs_read(GROUND_TRUTH_PATH).tolist()
             #ngt_dict = run_multithreaded_queries(ground_truth,filter_expr,milvus_col)
-            calculate_recall(expr_results, K)
+            calculate_recall(expr_results, TOP_K)
 
             sys.exit(2)
 
@@ -442,8 +458,13 @@ def main(argv):
             conn = connect_postgres_server()
             cur = conn.cursor()
             search_vecs_pg(conn,cur,id)
-            sys.exit(2)
-
+        elif opt_name in ("-k", "--top_k"):
+            try:
+                TOP_K = int(opt_value)  # Convert the value to an integer
+                print(f"Setting the top TOP_K value to {TOP_K}")
+            except ValueError:
+                print("Error: TOP_K must be an integer")
+                sys.exit(2)
         else:
             print("wrong parameter")
             sys.exit(2)

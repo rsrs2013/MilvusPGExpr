@@ -38,6 +38,14 @@ csv_file = "/tmp/postgres_table.csv"
 
 # milvus = Milvus()
 
+def ivecs_read(fname):
+    a = np.fromfile(fname, dtype='int32')
+    d = a[0]
+    return a.reshape(-1, d + 1)[:, 1:].copy()
+
+def fvecs_read(fname):
+    return ivecs_read(fname).view('float32')
+
 def get_vector_at_location(fname,query_location):
     #begin_num = base_len * idx
     # print(fname, ": ", begin_num )
