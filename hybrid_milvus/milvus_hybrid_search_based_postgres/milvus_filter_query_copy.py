@@ -11,7 +11,7 @@ import pandas as pd
 import struct
 import os
 
-MILVUS_collection = 'milvus_hybrid_query'
+MILVUS_collection = 'milvus_hybrid_query_with_price'
 
 #FILE_PATH = 'bigann_base.bvecs'
 FILE_PATH = '/home/iitd/milvus/hybrid_milvus/sift/sift_base.fvecs'
@@ -34,6 +34,7 @@ csv_file = "/tmp/temp_full.csv"
 sex_flag = False
 time_flag = False
 glasses_flag = False
+price_flag = False
 filter_expr = ""
 
 def ivecs_read(fname):
@@ -337,12 +338,14 @@ def main(argv):
     #filter_expr = None
     output_fields = []
     global TOP_K
+    global price_flag
+    global filter_expr
     
     try:
         opts, args = getopt.getopt(
             sys.argv[1:],
-            "n:s:t:g:vk:q",
-            ["num=", "sex=", "time=", "glasses=", "vector=", "top_k=", "query="],
+            "n:s:t:g:p:vk:q",
+            ["num=", "sex=", "time=", "glasses=", "min-price=", "max-price=", "vector=", "top_k=", "query="],
         )
         # print(opts)
     except getopt.GetoptError:
@@ -384,59 +387,22 @@ def main(argv):
             glasses = opt_value
             glasses_flag = True
 
+        elif opt_name in ("--min-price"):
+            #global price_flag
+            price_flag = True
+            min_price = opt_value
+
+        elif opt_name in ("--max-price"):
+            #global price_flag
+            price_flag = True
+            max_price = opt_value
+
         elif opt_name in ("-q", "--query"):
             print("querying the values:")
 
-            if sex_flag:
-                if time_flag:
-
-                    if glasses_flag:
-                        output_fields = ['sex', 'is_glasses', 'start_time']
-                        global filter_expr
-                        filter_expr = f"(sex == '{sex}') and (is_glasses == {glasses}) and (start_time >= {start_timestamp}) and (start_time <= {end_timestamp})"
-                        #print("search in pg cost time: ", time_end_1 - time_start_1)
-                    else:
-                        output_fields = ['sex', 'start_time']
-                        filter_expr = f"(sex == '{sex}')  and (start_time >= {start_timestamp}) and (start_time <= {end_timestamp})"
-#                else:
-#                    if glasses_flag:
-#                        time_start_1 = time.time()
-#                        rows = search_in_pg_2(conn,cur,result_ids, result_distance, sex, glasses)
-#                        time_end_1 = time.time()
-#                        print("search in pg cost time: ", time_end_1 - time_start_1)
-#                        merge_rows_distance(rows,result_ids,result_distance)
-#                    else:
-#                        time_start_1 = time.time()
-#                        rows = search_in_pg_3(conn,cur,result_ids, result_distance,sex)
-#                        time_end_1 = time.time()
-#                        print("search in pg cost time: ", time_end_1 - time_start_1)
-#                        merge_rows_distance(rows,result_ids,result_distance)
-#            else:
-#                if time_flag:
-#                    if glasses_flag:
-#                        time_start_1 = time.time()
-#                        rows = search_in_pg_4(conn,cur,result_ids,result_distance,time_insert,glasses)
-#                        time_end_1 = time.time()
-#                        print("search in pg cost time: ", time_end_1 - time_start_1)
-#                        merge_rows_distance(rows,result_ids,result_distance)
-#                    else:
-#                        time_start_1 = time.time()
-#                        rows = search_in_pg_5(conn,cur,result_ids,result_distance,time_insert)
-#                        time_end_1 = time.time()
-#                        print("search in pg cost time: ", time_end_1 - time_start_1)
-#                        merge_rows_distance(rows,result_ids,result_distance)
-#                else:
-#                    if glasses_flag:
-#                        time_start_1 = time.time()
-#                        rows = search_in_pg_6(conn,cur,result_ids,result_distance,glasses)
-#                        time_end_1 = time.time()
-#                        print("search in pg cost time: ", time_end_1 - time_start_1)
-#                        merge_rows_distance(rows,result_ids,result_distance)
-#                    else:
-#                        time_start_1 = time.time()
-#                        search_in_pg_7(conn,cur,result_ids,result_distance)
-#                        time_end_1 = time.time()
-#                        print("search in pg cost time: ", time_end_1 - time_start_1)
+            if price_flag:
+                output_fields = ['price']
+                filter_expr = f"(price >= {min_price}) and (price <= {max_price})"
             
             print("Searching in Milvus")
             #query_milvus(milvus_col, query_vec, filter_expr, output_fields)

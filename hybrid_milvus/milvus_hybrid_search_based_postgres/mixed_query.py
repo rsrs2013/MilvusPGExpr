@@ -6,6 +6,7 @@ import psycopg2
 import numpy as np
 import struct
 import concurrent.futures
+from postgres_manager import PostgresManager
 
 
 
@@ -16,7 +17,7 @@ GROUND_TRUTH_PATH = '/home/iitd/milvus/hybrid_milvus/sift/sift_groundtruth.ivecs
 # query_location = 0
 
 MILVUS_collection = 'mixe_query'
-PG_TABLE_NAME = 'mixe_query'
+PG_TABLE_NAME = 'mixe_query_prices'
 
 
 SERVER_ADDR = "0.0.0.0"
@@ -34,14 +35,16 @@ DISTANCE_THRESHOLD = 1
 
 ground_truth_dir = "output_ivecs_results"
 MILVUS_PG_RESULTS_FILE = "milvus_pg_res.csv"
-TOTAL_QUERY_VECS = 5000
+TOTAL_QUERY_VECS = 1
 
 # milvus = Milvus()
-
 
 sex_flag = False
 time_flag = False
 glasses_flag = False
+prices_flag = False
+min_price_flag = False
+max_price_flag = False
 filter_expr = ""
 
 def ivecs_read(fname):
@@ -60,7 +63,6 @@ def connect_postgres_server():
         return conn
     except:
         print ("unable to connect to the database")
-
 
 def load_fvecs_data_trial(fname,query_location):
     #begin_num = base_len * idx
@@ -463,11 +465,9 @@ def search_in_pg_1(conn,cur,milvus_query_ids,result_distance,sex,time):
     try:
         cur.execute(sql)
         rows=cur.fetchall()
-        # print("search sucessful!")
-        #print(len(rows))
         return rows
     except:
-        print("search faild!")
+        print("search failed!")
 
 
 def search_in_pg_2(conn,cur,milvus_query_ids,result_distance,sex,glasses):
@@ -586,6 +586,35 @@ def search_in_pg_7(conn,cur,milvus_query_ids,result_distance):
     except:
         print("search faild!")
 
+def search_in_pg_prices(pg_manager, milvus_query_ids,min_price=-1,max_price=-1):
+    sql1 = str(milvus_query_ids[0])
+    i = 1
+    while i < len(milvus_query_ids):
+        sql1 = sql1 + "," + str(milvus_query_ids[i])
+        i = i + 1
+    if min_price != -1 and max_price != -1:
+        price_rel = f"price between {min_price} and {max_price}"
+    elif min_price != -1:
+        price_rel = f"price >= {min_price}"
+    elif max_price != -1:
+        price_rel = f"price <= {max_price}"
+
+    sql = "select * from " + PG_TABLE_NAME + " where ids in (" + sql1 + ") and " + price_rel + ";"
+    #sql = "select * from " + PG_TABLE_NAME + " where ids in (" + sql1 + ") and price between " + min_price + " and " + max_price + ";"
+    print(sql)
+
+    try:
+        #cur.execute(sql)
+        #rows=cur.fetchall()
+        print("Calling the pg manager to execute the select query")
+        rows = pg_manager.execute_select_query(sql)
+        #rows = pg_manager.execute_select_query(sql)
+        print(f"Length of the rows is: {len(rows)}")
+        return rows
+    except Exception as e:
+        print(f"search failed! with exeception {e}")
+
+
 
 def search_vecs_pg(conn,cur,id):
     sql = "select vecs from " + PG_TABLE_NAME + " where ids = " + id + ";"
@@ -599,19 +628,21 @@ def search_vecs_pg(conn,cur,id):
 
 def main(argv):
     connections.connect(alias="default", host=SERVER_ADDR, port=SERVER_PORT)
+    pg_manager = PostgresManager(PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DATABASE)
     global TOP_K
 
     try:
         opts, args = getopt.getopt(
             sys.argv[1:],
-            "n:s:t:g:vk:q",
-            ["num=", "sex=", "time=", "glasses=", "vector=", "top_k=", "query="],
+            "n:s:t:g:p:vk:q",
+            ["num=", "sex=", "time=", "glasses=", "min-price=", "max-price=", "vector=", "top_k=", "query="],
         )
         # print(opts)
     except getopt.GetoptError:
         sys.exit(2)
 
     for opt_name, opt_value in opts:
+        print(opt_name)
         if opt_name in ("-n", "--num"):
             query_location = opt_value
             #query_vec = load_query_list(BASE_VECTORS_PATH,query_location)
@@ -635,7 +666,34 @@ def main(argv):
             glasses = opt_value
             glasses_flag = True
 
+        elif opt_name in ("-p", "--prices"):
+            global prices_flag
+            prices = opt_value
+            prices_flag = True
+            if len(args) >= 2:  # Ensure there are at least 2 arguments for --price
+                try:
+                    min_price = int(opt_value)
+                    max_price = int(args[0])
+                    #args = args[2:]  # Remove processed arguments
+                except ValueError:
+                    print(args[0])
+                    print(args[1])
+                    print(prices)
+                    print("Error: Price range must be integers.")
+                    sys.exit(1)
+
+        elif opt_name in ("--min-price"):
+            global price_flag
+            price_flag = True
+            min_price = opt_value
+
+        elif opt_name in ("--max-price"):
+            global max_price_flag
+            price_flag = True
+            max_price = opt_value
+
         elif opt_name in ("-q", "--query"):
+            print("Querying the data")
             milvus = MilvusClient(host=SERVER_ADDR, port=SERVER_PORT)
             milvus_col = Collection(MILVUS_collection)
             time_start_0 = time.time()
@@ -645,8 +703,9 @@ def main(argv):
             
             time_end_0 = time.time()            
             print("search in milvus cost time: ", time_end_0 - time_start_0)
-            conn = connect_postgres_server()
-            cur = conn.cursor()
+            #conn = connect_postgres_server()
+            #cur = conn.cursor()
+            pg_manager.connect()
             # print(sex_flag, glasses_flag,time_flag)
 
 
@@ -654,98 +713,110 @@ def main(argv):
                 global filter_expr
                 #ground_truth = ivecs_read(GROUND_TRUTH_PATH).tolist()
                 postgres_rows = []
+
+                if price_flag:
+                   for i, row in enumerate(milvus_query_ids):
+                        # row is having the ids, which are k-closest to the i-th query in the test dataset
+                        pg_query_res = search_in_pg_prices(pg_manager, row, min_price, max_price)
+                        #print(f"PG_QUERY_RES is: {len(pg_query_res)}")
+                        #pg_query_res = search_in_pg_1(conn,cur,row, result_distance, sex,time_insert)
+                        ids = [pg_tuple[0] for pg_tuple in pg_query_res]
+                        if(len(ids) == 0):
+                            list_of_empty_results.append(i)
+                        postgres_rows.append(ids)
                 
-                if sex_flag:
-                    if time_flag:
-                        if glasses_flag:
-                            # print(time[0])
-                            # print(time[1])
+                # if sex_flag:
+                #     if time_flag:
+                #         if glasses_flag:
+                #             # print(time[0])
+                #             # print(time[1])
 
-                            # Get the k-nn from the milvus and filter them using postgres.
-                            time_start_1 = time.time()
-                            for row in milvus_query_ids:
-                                rows = search_in_pg_0(conn,cur,row, result_distance, sex,time_insert,glasses)
-                                postgres_rows.append(rows)
-                            time_end_1 = time.time()
+                #             # Get the k-nn from the milvus and filter them using postgres.
+                #             time_start_1 = time.time()
+                #             for row in milvus_query_ids:
+                #                 rows = search_in_pg_0(conn,cur,row, result_distance, sex,time_insert,glasses)
+                #                 postgres_rows.append(rows)
+                #             time_end_1 = time.time()
                             
-                            print("search in pg cost time: ", time_end_1 - time_start_1)
-                            #merge_rows_distance(rows,milvus_query_ids,result_distance)
+                #             print("search in pg cost time: ", time_end_1 - time_start_1)
+                #             #merge_rows_distance(rows,milvus_query_ids,result_distance)
                           
+                #         else:
+                #             time_start_1 = time.time()
+                #             list_of_empty_results = []
 
-                        else:
-                            time_start_1 = time.time()
-                            list_of_empty_results = []
-
-                            for i, row in enumerate(milvus_query_ids):
-                                #print(row)
-                                pg_query_res = search_in_pg_1(conn,cur,row, result_distance, sex,time_insert)
-                                ids = [pg_tuple[0] for pg_tuple in pg_query_res]
-                                if(len(ids) == 0):
-                                    list_of_empty_results.append(i)
-                                postgres_rows.append(ids)
+                #             for i, row in enumerate(milvus_query_ids):
+                #                 #print(row)
+                #                 pg_query_res = search_in_pg_1(conn,cur,row, result_distance, sex,time_insert)
+                #                 ids = [pg_tuple[0] for pg_tuple in pg_query_res]
+                #                 if(len(ids) == 0):
+                #                     list_of_empty_results.append(i)
+                #                 postgres_rows.append(ids)
                             
-                            time_end_1 = time.time()
+                #             time_end_1 = time.time()
                           
-                            print("search in pg cost time: ", time_end_1 - time_start_1)
-                            merged_results = merge_rows_distance(postgres_rows,milvus_query_ids,result_distance)
+                #             print("search in pg cost time: ", time_end_1 - time_start_1)
+                #             merged_results = merge_rows_distance(postgres_rows,milvus_query_ids,result_distance)
                           
-                            #print(len(milvus_query_ids))
-                            #print(f"{len(postgres_rows)}, {len(postgres_rows[0])}")
-                            #print(f"{len(set(milvus_query_ids[0]) & set(postgres_rows[0]))}")
+                #             #print(len(milvus_query_ids))
+                #             #print(f"{len(postgres_rows)}, {len(postgres_rows[0])}")
+                #             #print(f"{len(set(milvus_query_ids[0]) & set(postgres_rows[0]))}")
 
-                            # for row in ground_truth:
-                            #     #print (f" Number of intersections are: {len(set(row) & set(postgres_rows[key]))} ")
-                            #     #print (f" Number of intersectons b/n milvus and postgres are: {len(set(milvus_query_ids[key]) & set(postgres_rows[key]))} ")
-                            #     result = search_in_pg_1(conn,cur,row, result_distance, sex,time_insert)
-                            #     ids = [item[0] for item in result]
-                            #     ngt_dict[key] = ids
-                            #     key = key + 1
+                #             # for row in ground_truth:
+                #             #     #print (f" Number of intersections are: {len(set(row) & set(postgres_rows[key]))} ")
+                #             #     #print (f" Number of intersectons b/n milvus and postgres are: {len(set(milvus_query_ids[key]) & set(postgres_rows[key]))} ")
+                #             #     result = search_in_pg_1(conn,cur,row, result_distance, sex,time_insert)
+                #             #     ids = [item[0] for item in result]
+                #             #     ngt_dict[key] = ids
+                #             #     key = key + 1
 
-                            # #print(f"NGT Dict is: {ngt_dict}")
+                #             # #print(f"NGT Dict is: {ngt_dict}")
 
-                            print(f"The K value is {TOP_K}")
-                            calculate_recall(postgres_rows)
+                #             print(f"The K value is {TOP_K}")
+                #             calculate_recall(postgres_rows)
 
-                    else:
-                        if glasses_flag:
-                            time_start_1 = time.time()
-                            rows = search_in_pg_2(conn,cur,milvus_query_ids, result_distance, sex, glasses)
-                            time_end_1 = time.time()
-                            print("search in pg cost time: ", time_end_1 - time_start_1)
-                            merge_rows_distance(rows,milvus_query_ids,result_distance)
-                        else:
-                            time_start_1 = time.time()
-                            rows = search_in_pg_3(conn,cur,milvus_query_ids, result_distance,sex)
-                            time_end_1 = time.time()
-                            print("search in pg cost time: ", time_end_1 - time_start_1)
-                            merge_rows_distance(rows,milvus_query_ids,result_distance)
-                else:
-                    if time_flag:
-                        if glasses_flag:
-                            time_start_1 = time.time()
-                            rows = search_in_pg_4(conn,cur,milvus_query_ids,result_distance,time_insert,glasses)
-                            time_end_1 = time.time()
-                            print("search in pg cost time: ", time_end_1 - time_start_1)
-                            merge_rows_distance(rows,milvus_query_ids,result_distance)
-                        else:
-                            time_start_1 = time.time()
-                            rows = search_in_pg_5(conn,cur,milvus_query_ids,result_distance,time_insert)
-                            time_end_1 = time.time()
-                            print("search in pg cost time: ", time_end_1 - time_start_1)
-                            merge_rows_distance(rows,milvus_query_ids,result_distance)
-                    else:
-                        if glasses_flag:
-                            time_start_1 = time.time()
-                            rows = search_in_pg_6(conn,cur,milvus_query_ids,result_distance,glasses)
-                            time_end_1 = time.time()
-                            print("search in pg cost time: ", time_end_1 - time_start_1)
-                            merge_rows_distance(rows,milvus_query_ids,result_distance)
-                        else:
-                            time_start_1 = time.time()
-                            search_in_pg_7(conn,cur,milvus_query_ids,result_distance)
-                            time_end_1 = time.time()
-                            print("search in pg cost time: ", time_end_1 - time_start_1)
-                sys.exit(2)
+                #     else:
+                #         if glasses_flag:
+                #             time_start_1 = time.time()
+                #             rows = search_in_pg_2(conn,cur,milvus_query_ids, result_distance, sex, glasses)
+                #             time_end_1 = time.time()
+                #             print("search in pg cost time: ", time_end_1 - time_start_1)
+                #             merge_rows_distance(rows,milvus_query_ids,result_distance)
+                #         else:
+                #             time_start_1 = time.time()
+                #             rows = search_in_pg_3(conn,cur,milvus_query_ids, result_distance,sex)
+                #             time_end_1 = time.time()
+                #             print("search in pg cost time: ", time_end_1 - time_start_1)
+                #             merge_rows_distance(rows,milvus_query_ids,result_distance)
+                # else:
+                #     if time_flag:
+                #         if glasses_flag:
+                #             time_start_1 = time.time()
+                #             rows = search_in_pg_4(conn,cur,milvus_query_ids,result_distance,time_insert,glasses)
+                #             time_end_1 = time.time()
+                #             print("search in pg cost time: ", time_end_1 - time_start_1)
+                #             merge_rows_distance(rows,milvus_query_ids,result_distance)
+                #         else:
+                #             time_start_1 = time.time()
+                #             rows = search_in_pg_5(conn,cur,milvus_query_ids,result_distance,time_insert)
+                #             time_end_1 = time.time()
+                #             print("search in pg cost time: ", time_end_1 - time_start_1)
+                #             merge_rows_distance(rows,milvus_query_ids,result_distance)
+                #     else:
+                #         if glasses_flag:
+                #             time_start_1 = time.time()
+                #             rows = search_in_pg_6(conn,cur,milvus_query_ids,result_distance,glasses)
+                #             time_end_1 = time.time()
+                #             print("search in pg cost time: ", time_end_1 - time_start_1)
+                #             merge_rows_distance(rows,milvus_query_ids,result_distance)
+                #         else:
+                #             time_start_1 = time.time()
+                #             search_in_pg_7(conn,cur,milvus_query_ids,result_distance)
+                #             time_end_1 = time.time()
+                #             print("search in pg cost time: ", time_end_1 - time_start_1)
+                # sys.exit(2)
+                merged_results = merge_rows_distance(postgres_rows,milvus_query_ids,result_distance)
+                calculate_recall(postgres_rows)
             else:
                 print("no vectors!")
 

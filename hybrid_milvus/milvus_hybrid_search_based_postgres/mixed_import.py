@@ -8,13 +8,15 @@ import numpy as np
 import random
 import subprocess
 from faker import Faker
+from postgres_manager import PostgresManager
 
 
 fake = Faker()
 
 
 MILVUS_collection = 'mixe_query'
-PG_TABLE_NAME = 'mixe_query'
+PG_TABLE_NAME = 'mixe_query_prices'
+PG_INDEX_NAME = 'mixe_query_prices_index'
 
 #FILE_PATH = 'bigann_base.bvecs'
 FILE_PATH = '/home/iitd/milvus/hybrid_milvus/sift/sift_base.fvecs'
@@ -34,6 +36,29 @@ PG_PORT = 5432
 PG_USER = "postgres"
 PG_PASSWORD = "postgres"
 PG_DATABASE = "postgres"
+
+# Number of rows in your database
+num_rows = 1000000
+
+# Define price range
+price_min = 50
+price_max = 1000
+
+# Generate left-skewed random values using a beta distribution
+alpha, beta = 5, 2  # Adjust alpha > beta for left skew
+random_prices = np.random.beta(alpha, beta, num_rows)
+
+# Scale the prices to your desired range
+scaled_prices = price_min + (price_max - price_min) * random_prices
+
+# Convert scaled prices to integers (round to the nearest integer)
+scaled_prices = np.round(scaled_prices).astype(int)
+
+# Optional: Check the data type and range
+print(scaled_prices[:10])  # Print the first 10 prices as a sample
+print(f"Data type: {scaled_prices.dtype}")
+print(f"Min price: {scaled_prices.min()}, Max price: {scaled_prices.max()}")
+
 
 # milvus = Milvus()
 
@@ -102,7 +127,7 @@ def create_milvus_collection(milvus):
     #print(f"The schema of the collection is {collec.schema}")
     print(milvus.describe_collection(MILVUS_collection))
 
-def build_collection(milvus):
+def build_milvus_index(milvus):
     #list_of_indexes = milvus.list_indexes(collection_name=MILVUS_collection)
     status = milvus.release_collection(MILVUS_collection)
     print(f"Collection release status: {status}")
@@ -113,10 +138,10 @@ def build_collection(milvus):
     index_params = MilvusClient.prepare_index_params()
     index_params.add_index(
             field_name = "vector",
-            index_type = "IVF_SQ8",
+            index_type = "IVF_PQ",
             metric_type = "L2",
             index_name="vector_index",
-            params = {"nlist": 16384}
+            params = {"nlist": 128, "m":16}
             )
     #index_param = {'nlist': 16384}
     status = milvus.create_index(MILVUS_collection,index_params)
@@ -223,15 +248,17 @@ def build_pg_index_using_psql():
 
 # writes a line of string id, sex, time, glasses to a file
 # this file is read by the postgres sql
-def record_txt(ids):
+def record_txt(ids, prices_to_insert):
     fname = '/tmp/temp.csv'
     f2 = open(COMPLETE_CSV_FILE, "a")
     with open(fname,'w+') as f:
         for i in range(len(ids)):
-            sex = random.choice(['female','male'])
-            get_time = fake.past_datetime(start_date="-120d", tzinfo=None)
-            is_glasses = random.choice(['True','False'])
-            line = str(ids[i]) + "|" + sex + "|'" + str(get_time) + "'|" + str(is_glasses) + "\n"
+            #sex = random.choice(['female','male'])
+            #get_time = fake.past_datetime(start_date="-120d", tzinfo=None)
+            #is_glasses = random.choice(['True','False'])
+            #line = str(ids[i]) + "|" + sex + "|'" + str(get_time) + "'|" + str(is_glasses) + "\n"
+            price =  prices_to_insert[i]
+            line = str(ids[i]) + "|" + str(price) + "\n"
             f.write(line)
             f2.write(line)
 
@@ -285,10 +312,16 @@ def main():
     # connect_milvus_server()
     milvus = MilvusClient(host=SERVER_ADDR, port=SERVER_PORT)
     create_milvus_collection(milvus)
-    build_collection(milvus)
-    conn = connect_postgres_server()
-    cur = conn.cursor()
-    create_pg_table(conn,cur)
+    build_milvus_index(milvus)
+    #conn = connect_postgres_server()
+    pg_manager = PostgresManager(PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DATABASE)
+    # Connect to the PostgreSQL server
+    pg_manager.connect()
+    # Create the table
+    TABLE_SCHEMA = "ids bigint, price int"
+    pg_manager.create_table(TABLE_SCHEMA, PG_TABLE_NAME)
+    #cur = conn.cursor()
+    #create_pg_table(conn,cur)
     count = 0
 
     connections.connect(alias="default", host=SERVER_ADDR, port=SERVER_PORT)
@@ -325,7 +358,9 @@ def main():
         print(count, "insert milvue time: ", time_end-time_start)
         # print(count)
         time_start = time.time()
-        record_txt(mutation_result.primary_keys)
+        prices_to_insert = scaled_prices[count*BASE_LEN:(count+1)*BASE_LEN]
+        record_txt(mutation_result.primary_keys, prices_to_insert)
+        pg_manager.copy_data_from_csv('/tmp/temp.csv', PG_TABLE_NAME)
         #copy_data_to_pg_using_psql()
         time_end = time.time()
         print(count, "insert pg time: ", time_end-time_start)
@@ -333,8 +368,9 @@ def main():
         count = count + 1
 
     print("Total count is: ",count)
-    copy_data_to_pg_using_psql()
-    build_pg_index_using_psql()
+    #copy_data_to_pg_using_psql()
+    #build_pg_index_using_psql()
+    pg_manager.build_pg_index_using_psql(PG_TABLE_NAME, PG_INDEX_NAME)
 
 
 if __name__ == '__main__':

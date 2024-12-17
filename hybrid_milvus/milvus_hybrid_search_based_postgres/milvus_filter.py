@@ -12,8 +12,7 @@ import pandas as pd
 
 
 
-MILVUS_collection = 'milvus_hybrid_query'
-PG_TABLE_NAME = 'mixe_query'
+MILVUS_collection = 'milvus_hybrid_query_with_price'
 
 #FILE_PATH = 'bigann_base.bvecs'
 FILE_PATH = '/home/iitd/milvus/hybrid_milvus/sift/sift_base.fvecs'
@@ -33,18 +32,12 @@ PG_USER = "postgres"
 PG_PASSWORD = "postgres"
 PG_DATABASE = "postgres"
 
-#csv_file = "/tmp/temp_full.csv"
-csv_file = "/tmp/postgres_table.csv"
+csv_file = "/tmp/temp_full.csv"
+#csv_file = "/tmp/postgres_table.csv"
 
 # milvus = Milvus()
 
-def ivecs_read(fname):
-    a = np.fromfile(fname, dtype='int32')
-    d = a[0]
-    return a.reshape(-1, d + 1)[:, 1:].copy()
 
-def fvecs_read(fname):
-    return ivecs_read(fname).view('float32')
 
 def get_vector_at_location(fname,query_location):
     #begin_num = base_len * idx
@@ -94,20 +87,23 @@ def create_milvus_collection(milvus):
     
     # Define field for vector data (Float vector)
     vector_field = FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=128)  # Adjust dimension as per your data
+
+    price_field = FieldSchema(name="price", dtype=DataType.INT32)
     
     # Define field for sex (Binary data - male or female)
-    sex_field = FieldSchema(name="sex", dtype=DataType.VARCHAR, max_length=10)
+    #sex_field = FieldSchema(name="sex", dtype=DataType.VARCHAR, max_length=10)
     
     # Define field for glasses (Boolean data)
-    glasses_field = FieldSchema(name="is_glasses", dtype=DataType.BOOL)
+    #glasses_field = FieldSchema(name="is_glasses", dtype=DataType.BOOL)
     
     # Define field for start_time (timestamp)
-    time_field = FieldSchema(name="start_time", dtype=DataType.INT64)  # Store as Unix timestamp
+    #time_field = FieldSchema(name="start_time", dtype=DataType.INT64)  # Store as Unix timestamp
     
     # Define the schema with all fields
     schema = CollectionSchema(
-        fields=[id_field, vector_field, sex_field, glasses_field, time_field],
+        #fields=[id_field, vector_field, sex_field, glasses_field, time_field],
         #fields=[id_field, vector_field, sex_field, glasses_field],
+        fields=[id_field, vector_field, price_field],
         description="Example collection schema with vector and scalar fields"
     )
 
@@ -124,12 +120,19 @@ def build_milvus_index(milvus):
     )
     index_params = MilvusClient.prepare_index_params()
     index_params.add_index(
-            field_name = "vector",
-            index_type = "IVF_SQ8",
-            metric_type = "L2",
-            index_name="vector_index",
-            params = {"nlist": 16384}
-            )
+        field_name = "vector",
+        index_type = "IVF_PQ",
+        metric_type = "L2",
+        index_name="vector_index",
+        params = {"nlist": 128, "m":16}
+        )
+    # index_params.add_index(
+    #         field_name = "vector",
+    #         index_type = "IVF_SQ8",
+    #         metric_type = "L2",
+    #         index_name="vector_index",
+    #         params = {"nlist": 16384}
+    #         )
     #index_param = {'nlist': 16384}
     status = milvus.create_index(MILVUS_collection,index_params)
     print(status)
@@ -164,9 +167,10 @@ def batch_insert_vectors(collection, file_path, batch_len):
 
 
 def read_csv_to_arrays(csv_file):
-    sex = []
-    time = []
-    is_glasses = []
+    #sex = []
+    #time = []
+    #is_glasses = []
+    price = []
     
     with open(csv_file, mode='r') as file:
         # Read the CSV file
@@ -175,16 +179,19 @@ def read_csv_to_arrays(csv_file):
         for row in csv_reader:
             # Extract the fields from each row
             id_value = row[0]  # You can use this if needed
-            sex_value = row[1]
-            time_value = row[2].strip("'")  # Strip the single quotes around time
-            is_glasses_value = row[3]
+            price_value = row[1]
+            #sex_value = row[1]
+            #time_value = row[2].strip("'")  # Strip the single quotes around time
+            #is_glasses_value = row[3]
 
             # Append to respective arrays
-            sex.append(sex_value)
-            time.append(time_value)
-            is_glasses.append(is_glasses_value)
+            #sex.append(sex_value)
+            #time.append(time_value)
+            #is_glasses.append(is_glasses_value)
+            price.append(price_value)
 
-    return sex, time, is_glasses
+    #return sex, time, is_glasses
+    return price
 
 def read_csv_in_pandas_chunks(csv_file, chunk_size):
     # Use pandas to read the CSV file in chunks
@@ -210,25 +217,28 @@ def main():
 
     for chunk in read_csv_in_pandas_chunks(csv_file, chunk_size):
         ids = []
-        sex = []
-        start_time = []
-        is_glasses = []
+        #sex = []
+        #start_time = []
+        #is_glasses = []
+        price = []
         print("Processing Chunk:")
         
         # Append each column to the respective array
         ids.extend(chunk.iloc[:, 0].tolist())  # First column (ID)
-        sex.extend(chunk.iloc[:, 1].tolist())  # Second column (Sex)
-        start_time.extend(chunk.iloc[:, 2].tolist())  # Third column (Get Time)
-        is_glasses.extend(chunk.iloc[:, 3].tolist())  # Fourth column (Is Glasses)
-        timestamps = [start_timestamp(date_str) for date_str in start_time]
+        #sex.extend(chunk.iloc[:, 1].tolist())  # Second column (Sex)
+        price.extend(chunk.iloc[:, 1].tolist())  # Second column (Price)
+        #start_time.extend(chunk.iloc[:, 2].tolist())  # Third column (Get Time)
+        #is_glasses.extend(chunk.iloc[:, 3].tolist())  # Fourth column (Is Glasses)
+        #timestamps = [start_timestamp(date_str) for date_str in start_time]
 
 
         vectors_to_insert = load_fvecs_data_trial(FILE_PATH,BASE_LEN,count)
         print(f"Length of the vectors is: {len(vectors_to_insert)}")
         vectors_ids = [id for id in range(count*BASE_LEN,(count+1)*BASE_LEN)]
         time_start = time.time()    
-        print(len(ids), len(sex), len(start_time), len(is_glasses))
-        mutation_result = milvus_col.insert([vectors_ids, vectors_to_insert, sex, is_glasses, timestamps])
+        #print(len(ids), len(sex), len(start_time), len(is_glasses))
+        #mutation_result = milvus_col.insert([vectors_ids, vectors_to_insert, sex, is_glasses, timestamps])
+        mutation_result = milvus_col.insert([vectors_ids, vectors_to_insert, price])
 
         
         #for i in range(10):

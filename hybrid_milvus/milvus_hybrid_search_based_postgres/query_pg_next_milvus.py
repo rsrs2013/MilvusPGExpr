@@ -49,43 +49,6 @@ def ivecs_read(fname):
 def fvecs_read(fname):
     return ivecs_read(fname).view('float32')
 
-def create_milvus_collection(milvus_client, collection_name):
-    # Check if the collection already exists
-    if milvus_client.has_collection(collection_name):
-        print("Dropping the collection")
-        print(collection_name)
-        milvus_client.drop_collection(collection_name)
-
-    collec = milvus_client.create_collection(
-        collection_name=collection_name,
-        dimension=VEC_DIM,
-        metric_type="L2",
-        auto_id=False
-    )
-    print(f"The list of collections are: {milvus_client.list_collections}")
-    #print(f"The schema of the collection is {collec.schema}")
-    print(milvus_client.describe_collection(collection_name))
-
-def build_milvus_index(milvus, collection_name):
-    #list_of_indexes = milvus.list_indexes(collection_name=MILVUS_collection)
-    status = milvus.release_collection(collection_name)
-    print(f"Collection release status: {status}")
-    milvus.drop_index(
-        collection_name=collection_name, 
-        index_name="vector"
-    )
-    #index_params = MilvusClient.prepare_index_params()
-    index_params = milvus.prepare_index_params()
-    index_params.add_index(
-            field_name = "vector",
-            index_type = "IVF_SQ8",
-            metric_type = "L2",
-            index_name="vector_index",
-            params = {"nlist": 16384}
-            )
-    #index_param = {'nlist': 16384}
-    status = milvus.create_index(collection_name,index_params)
-    print(status)
 
 def query_milvus(milvus_col):
     # Load the query vectors
@@ -144,84 +107,6 @@ def query_milvus(milvus_col):
 #         print("Data copied successfully using psql!")
 #     except subprocess.CalledProcessError as e:
 #         print("Failed to copy data using psql:", str(e))
-
-def connect_postgres_server():
-    try:
-        conn = psycopg2.connect(host=PG_HOST,port=PG_PORT,user=PG_USER,password=PG_PASSWORD,database=PG_DATABASE)
-        print("connect the database!")
-        return conn
-    except Exception as e:
-        print ("unable to connect to the database", e)
-
-def create_pg_table(conn,cur):
-    try:
-        print(f"Creating the postgres table")
-        sql_drop = "DROP TABLE IF EXISTS "+ PG_TABLE_NAME;
-        cur.execute(sql_drop);
-        print(f"Dropped the table")
-        sql = "CREATE TABLE " + PG_TABLE_NAME + " (ids bigint, sex char(10), get_time timestamp, is_glasses boolean);"
-        cur.execute(sql)
-        conn.commit()
-        print("created postgres table!")
-    except Exception as e:
-        print(f"can't create postgres table: {e}")
-
-def search_in_pg_1(conn,cur,sex,time):
-    sql = "select * from " + PG_TABLE_NAME + " where sex='" + sex + "' and get_time between '" + time[0] + "' and '" + time[1] + "';"
-    print(sql)
-
-    try:
-        cur.execute(sql)
-        rows=cur.fetchall()
-        # print("search sucessful!")
-        #print(len(rows))
-        return rows
-    except:
-        print("search failed!")
-
-def parallel_load_and_insert(fname, collection_name, ids):
-    vectors = []
-    vector_ids = []
-    connections.connect(alias="default", host=SERVER_ADDR, port=SERVER_PORT)
-    milvus_col = Collection(collection_name)
-
-    # Function to load data for a single ID
-    def load_data(id):
-        return id, load_fvecs_data_trial(fname, id)
-
-    # Use ThreadPoolExecutor for parallel file reading
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        # Submit tasks for all IDs
-        futures = {executor.submit(load_data, id): id for id in ids}
-
-        for future in futures:
-            try:
-                id, vector = future.result()  # Get the result
-                vectors.append(vector)
-                vector_ids.append(id)
-            except Exception as e:
-                print(f"Error loading data for ID {futures[future]}: {e}")
-
-    #print(vectors[0:2])
-    #print(vector_ids[0:2])
-    # Insert data into Milvus
-    VEC_NUM = len(vector_ids)
-    count = 0
-    # Function to perform batch insertion
-    for i in range(0, VEC_NUM, BATCH_SIZE):
-        # Slice the vector_ids and vectors arrays for the current batch
-        batch_ids = vector_ids[i:i + BATCH_SIZE]
-        batch_vectors = vectors[i:i + BATCH_SIZE]
-    
-        # Perform the insert operation
-        mutation_result = milvus_col.insert([batch_ids, batch_vectors])
-    
-        # Optional: Print or log progress
-        print(f"Inserted batch {i // BATCH_SIZE + 1} of {VEC_NUM // BATCH_SIZE + 1}")
-
-def create_milvus_related_tables_and_index(collection_name, milvus_client):
-    create_milvus_collection(milvus_client, collection_name)
-    build_milvus_index(milvus_client, collection_name)
 
 def record_recall_result(TOP_K, recall, precision):
     fname = PG_NEXT_MILVUS_RESULTS_FILE
@@ -325,20 +210,16 @@ def main():
     milvus_client.load_collection(milvus_col.name)
 
     global TOP_K
-    
     try:
         opts, args = getopt.getopt(
             sys.argv[1:],
-            "n:s:t:g:vk:q",
-            ["num=", "sex=", "time=", "glasses=", "vector=", "top_k=", "query="],
+            "n:s:t:g:p:vk:q",
+            ["num=", "sex=", "time=", "glasses=", "min-price=", "max-price=", "vector=", "top_k=", "query="],
         )
         # print(opts)
     except getopt.GetoptError:
-        print("Usage: load_vec_to_milvus.py -n <npy>  -c <csv> -f <fvecs> -b <bvecs>")
-        sys.exit(2)
-
-
-
+        sys.exit(2)   
+ 
     for opt_name, opt_value in opts:
         if opt_name in ("-k", "--top_k"):
             try:
